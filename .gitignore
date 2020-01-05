@@ -1,0 +1,11 @@
+# Folders
+__pycache__/*
+data/*
+.vscode/
+.ipynb_checkpoints/
+
+# Files
+*.jpg
+*.parquet
+*.csv
+bengali-graphemes-starter-eda-multi-output-cnn.ipynb
