@@ -3,9 +3,11 @@ __pycache__/*
 data/*
 .vscode/
 .ipynb_checkpoints/
+logs/
 
 # Files
 *.jpg
 *.parquet
 *.csv
+*.h5
 bengali-graphemes-starter-eda-multi-output-cnn.ipynb

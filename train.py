@@ -1,0 +1,140 @@
+# Imports
+import pyarrow.parquet as pq
+import pandas as pd
+import numpy as np
+from tqdm.notebook import tqdm
+from matplotlib import pyplot as plt
+from sklearn.model_selection import train_test_split
+import cv2, os, gc, datetime, pickle
+
+import tensorflow as tf
+gpu_devices = tf.config.experimental.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(gpu_devices[0], True)
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.models import clone_model
+from tensorflow.keras.layers import Dense,Conv2D,Flatten,MaxPool2D,Dropout,BatchNormalization, Input
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+
+# Keras imports
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
+from tensorflow.keras.applications.resnet_v2 import ResNet50V2, ResNet152V2
+from tensorflow.keras.applications.xception import Xception
+from tensorflow.keras.applications.nasnet import NASNetLarge, NASNetMobile
+from tensorflow.keras.metrics import Accuracy, Precision, Recall
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard, ModelCheckpoint
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop, Adadelta, Nadam, Adagrad
+
+# Define Constants
+HEIGHT = 137
+WIDTH = 236
+SIZE = 224
+BATCH_SIZE = 32
+
+TB_LOG_DIR = "logs/scalars/" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+MODEL_PATH = "saved_model/model.h5"
+
+# Make image dumping directory
+train_dir_path = './data/images/train'
+test_dir_path = './data/images/test'
+
+if not os.path.isdir(train_dir_path):
+    os.makedirs(train_dir_path)
+    
+if not os.path.isdir(test_dir_path):
+    os.makedirs(test_dir_path)
+    
+model_dir = os.path.split(MODEL_PATH)[0]
+if not os.path.isdir(model_dir):
+    os.makedirs(model_dir)
+
+# Read train labels
+train_label_path = "./data/train.csv"
+df = pd.read_csv(train_label_path)
+
+# Dropping the last column (not required for training)
+df.drop(['grapheme'], axis=1, inplace=True)
+
+# Separating the data from the labels and one hot encoding the labels
+y_root = pd.get_dummies(df['grapheme_root'])
+y_vowel = pd.get_dummies(df['vowel_diacritic'])
+y_consonant = pd.get_dummies(df['consonant_diacritic'])
+x_name = df['image_id']
+
+# Train Test Split
+x_train_name, x_val_name, y_root_train, y_root_val, y_vowel_train, y_vowel_val, y_consonant_tarin, y_consonant_val = train_test_split(x_name, y_root, y_vowel, y_consonant, test_size=0.2, random_state=3) 
+
+# Create the Data Generator
+def data_generator(x, y_root, y_vowel, y_consonant, batch_size=16, saved_img_path='./data/images/train', image_shape=(299, 299)):
+    assert len(x) == len(y_root) == len(y_vowel) == len(y_consonant), 'Lengths of all inputs should be same'
+    
+    num_splits = round(len(x) // batch_size) + 1
+    
+    x_splits = np.array_split(x, num_splits)
+        
+    y_root_splits = np.array_split(y_root, num_splits)
+    y_vowel_splits = np.array_split(y_vowel, num_splits)
+    y_consonant_splits = np.array_split(y_consonant, num_splits)    
+    
+    i = 0
+    
+    while True:
+        xs = list()
+        
+        x_batch = x_splits[i].values
+        y_root_batch = y_root_splits[i].values
+        y_vowel_batch = y_vowel_splits[i].values
+        y_consonant_batch = y_consonant_splits[i].values
+        
+        i += 1
+        if i > num_splits-1: i = 0
+        
+        for x_ in x_batch:
+            path = os.path.join(saved_img_path, f"{x_}.jpg")
+            image = cv2.resize(cv2.imread(path, 0), image_shape, cv2.INTER_AREA)/255
+            xs.append(np.expand_dims(image, axis=2))
+        
+        yield np.array(xs), [y_root_batch, y_vowel_batch, y_consonant_batch]
+        
+# Callbacks
+tensorboard_callback = TensorBoard(log_dir=TB_LOG_DIR)
+checkpoint_callback = ModelCheckpoint(filepath=MODEL_PATH, monitor='val_loss', verbose=0, save_weights_only=False, save_best_only=True)
+early_stopping_callback = EarlyStopping(monitor='val_loss', patience=6, verbose=1)
+reduce_lr_callback = ReduceLROnPlateau(monitor='val_loss', factor=0.1, min_lr=1e-6, patience=2, verbose=1)
+
+# Model
+inputs = Input(shape = (SIZE, SIZE, 1))
+model = Conv2D(filters=3, kernel_size=(5, 5), padding='same', activation='relu', input_shape=(SIZE, SIZE, 1))(inputs)
+model = ResNet50V2(include_top=False, weights='imagenet')(model)
+model = Flatten()(model)
+model = Dense(1024, activation = "relu")(model)
+model = Dropout(rate=0.5)(model)
+dense = Dense(512, activation = "relu")(model)
+head_root = Dense(168, activation = 'softmax', name="root")(dense)
+head_vowel = Dense(11, activation = 'softmax', name="vowel")(dense)
+head_consonant = Dense(7, activation = 'softmax', name="consonant")(dense)
+model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
+
+# Compile Model
+opt = Adam(learning_rate=0.001)
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=[Accuracy(), Precision(), Recall()])
+
+# Create Generators
+train_gen = data_generator(x_train_name, y_root_train, y_vowel_train, y_consonant_tarin, batch_size=BATCH_SIZE, image_shape=(SIZE, SIZE), saved_img_path='/home/ani/Documents/temp')
+val_gen = data_generator(x_val_name, y_root_val, y_vowel_val, y_consonant_val, batch_size=BATCH_SIZE, image_shape=(SIZE, SIZE), saved_img_path='/home/ani/Documents/temp')
+
+# Train the model
+# Fit the model
+history = model.fit_generator(train_gen, epochs=200, validation_data=val_gen,
+                              steps_per_epoch=len(x_train_name)//BATCH_SIZE + 1, 
+                              validation_steps=len(x_val_name)//BATCH_SIZE + 1,
+                              callbacks=[tensorboard_callback,
+                                         checkpoint_callback,
+                                         early_stopping_callback,
+                                         reduce_lr_callback])
+
+# Save model History
+with open("model_history.pkl", "wb") as f:
+    pickle.dump(history, f)
+
