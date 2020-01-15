@@ -4,6 +4,7 @@ data/*
 .vscode/
 .ipynb_checkpoints/
 logs/
+saved_model/*
 
 # Files
 *.jpg
@@ -11,3 +12,4 @@ logs/
 *.csv
 *.h5
 bengali-graphemes-starter-eda-multi-output-cnn.ipynb
+nohup.out

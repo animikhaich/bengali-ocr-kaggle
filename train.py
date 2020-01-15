@@ -1,25 +1,25 @@
 # Imports
-import pyarrow.parquet as pq
 import pandas as pd
 import numpy as np
 from tqdm.notebook import tqdm
 from matplotlib import pyplot as plt
 from sklearn.model_selection import train_test_split
-import cv2, os, gc, datetime, pickle
+import cv2, os, gc, datetime, pickle, json
 
 import tensorflow as tf
 gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpu_devices[0], True)
 
+# Keras imports
 from tensorflow.keras.models import Model
 from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Dense,Conv2D,Flatten,MaxPool2D,Dropout,BatchNormalization, Input
+from tensorflow.keras.layers import Dense, Conv2D, Flatten, GlobalAveragePooling2D, MaxPool2D, Dropout, BatchNormalization, Input
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
-
-# Keras imports
 from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
 from tensorflow.keras.applications.resnet_v2 import ResNet50V2, ResNet152V2
+from tensorflow.keras.applications.resnet import ResNet50, ResNet152
+from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2
 from tensorflow.keras.applications.xception import Xception
 from tensorflow.keras.applications.nasnet import NASNetLarge, NASNetMobile
 from tensorflow.keras.metrics import Accuracy, Precision, Recall
@@ -32,8 +32,9 @@ WIDTH = 236
 SIZE = 224
 BATCH_SIZE = 32
 
-TB_LOG_DIR = "logs/scalars/" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-MODEL_PATH = "saved_model/model.h5"
+TB_LOG_DIR = "logs/scalars/CustomNet_1" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+WEIGHTS_PATH = "saved_model/custom_net_1_weights.h5"
+CONFIG_PATH = "saved_model/custom_net_1_config.cfg"
 
 # Make image dumping directory
 train_dir_path = './data/images/train'
@@ -45,7 +46,7 @@ if not os.path.isdir(train_dir_path):
 if not os.path.isdir(test_dir_path):
     os.makedirs(test_dir_path)
     
-model_dir = os.path.split(MODEL_PATH)[0]
+model_dir = os.path.split(WEIGHTS_PATH)[0]
 if not os.path.isdir(model_dir):
     os.makedirs(model_dir)
 
@@ -98,27 +99,57 @@ def data_generator(x, y_root, y_vowel, y_consonant, batch_size=16, saved_img_pat
         yield np.array(xs), [y_root_batch, y_vowel_batch, y_consonant_batch]
         
 # Callbacks
-tensorboard_callback = TensorBoard(log_dir=TB_LOG_DIR)
-checkpoint_callback = ModelCheckpoint(filepath=MODEL_PATH, monitor='val_loss', verbose=0, save_weights_only=False, save_best_only=True)
+tensorboard_callback = TensorBoard(log_dir=TB_LOG_DIR, write_images=True, update_freq='batch')
+checkpoint_callback = ModelCheckpoint(filepath=WEIGHTS_PATH, monitor='val_loss', verbose=0, save_weights_only=True, save_best_only=True)
 early_stopping_callback = EarlyStopping(monitor='val_loss', patience=6, verbose=1)
 reduce_lr_callback = ReduceLROnPlateau(monitor='val_loss', factor=0.1, min_lr=1e-6, patience=2, verbose=1)
 
 # Model
+# inputs = Input(shape = (SIZE, SIZE, 3))
+# model = Conv2D(filters=3, kernel_size=(5, 5), padding='same', activation='relu', input_shape=(SIZE, SIZE, 1))(inputs)
+# model = Conv2D(filters=128, kernel_size=(1, 1), padding='same', activation='relu')(model)
+# base = ResNet50V2(include_top=False, weights=None, input_shape=(SIZE, SIZE, 3))
+# model = Flatten()(base.output)
+# model = Dense(2048, activation="linear")(model)
+# model = Dropout(rate=0.5)(model)
+# dense = Dense(1024, activation="relu")(model)
+# model = Dropout(rate=0.5)(model)
+# head_root = Dense(168, activation='softmax', name="root")(dense)
+# head_vowel = Dense(11, activation='softmax', name="vowel")(dense)
+# head_consonant = Dense(7, activation='softmax', name="consonant")(dense)
+# model = Model(inputs=base.inputs, outputs=[head_root, head_vowel, head_consonant])
 inputs = Input(shape = (SIZE, SIZE, 1))
-model = Conv2D(filters=3, kernel_size=(5, 5), padding='same', activation='relu', input_shape=(SIZE, SIZE, 1))(inputs)
-model = ResNet50V2(include_top=False, weights='imagenet')(model)
+model = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(inputs)
+model = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(model)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.25)(model)
+model = Conv2D(64, (3, 3), activation='relu', padding='same')(model)
+model = Conv2D(64, (3, 3), activation='relu', padding='same')(model)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.25)(model)
+model = Conv2D(128, (3, 3), activation='relu', padding='same')(model)
+model = Conv2D(128, (3, 3), activation='relu', padding='same')(model)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.25)(model)
 model = Flatten()(model)
-model = Dense(1024, activation = "relu")(model)
-model = Dropout(rate=0.5)(model)
-dense = Dense(512, activation = "relu")(model)
-head_root = Dense(168, activation = 'softmax', name="root")(dense)
-head_vowel = Dense(11, activation = 'softmax', name="vowel")(dense)
-head_consonant = Dense(7, activation = 'softmax', name="consonant")(dense)
+model = Dense(1024, activation='relu')(model)
+model = Dropout(0.5)(model)
+model = Dense(512, activation='relu')(model)
+model = Dropout(0.5)(model)
+head_root = Dense(168, activation='softmax', name="root")(model)
+head_vowel = Dense(11, activation='softmax', name="vowel")(model)
+head_consonant = Dense(7, activation='softmax', name="consonant")(model)
 model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
 
+print(model.summary())
 # Compile Model
 opt = Adam(learning_rate=0.001)
-model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=[Accuracy(), Precision(), Recall()])
+model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy', Precision(), Recall(), 'mean_squared_error'])
+
+# Get the model Config
+cfg = model.get_config()
+with open(CONFIG_PATH, 'w') as f:
+    json.dump(cfg, f, indent=4)
 
 # Create Generators
 train_gen = data_generator(x_train_name, y_root_train, y_vowel_train, y_consonant_tarin, batch_size=BATCH_SIZE, image_shape=(SIZE, SIZE), saved_img_path='/home/ani/Documents/temp')
@@ -129,12 +160,9 @@ val_gen = data_generator(x_val_name, y_root_val, y_vowel_val, y_consonant_val, b
 history = model.fit_generator(train_gen, epochs=200, validation_data=val_gen,
                               steps_per_epoch=len(x_train_name)//BATCH_SIZE + 1, 
                               validation_steps=len(x_val_name)//BATCH_SIZE + 1,
-                              callbacks=[tensorboard_callback,
+                              callbacks=[tensorboard_callback, 
                                          checkpoint_callback,
                                          early_stopping_callback,
                                          reduce_lr_callback])
 
-# Save model History
-with open("model_history.pkl", "wb") as f:
-    pickle.dump(history, f)
 
