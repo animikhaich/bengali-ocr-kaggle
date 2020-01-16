@@ -35,7 +35,7 @@ from tensorflow.keras.mixed_precision import experimental as mixed_precision
 HEIGHT = 137
 WIDTH = 236
 SIZE = 224
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 
 TB_LOG_DIR = "logs/scalars/CustomResNet_3_" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
 WEIGHTS_PATH = "saved_model/custom_resnet_3_weights.h5"
@@ -108,7 +108,14 @@ def data_generator(x, y_root, y_vowel, y_consonant, batch_size=16, saved_img_pat
         yield np.array(xs), [y_root_batch, y_vowel_batch, y_consonant_batch]
         
 # Callbacks
-tensorboard_callback = TensorBoard(log_dir=TB_LOG_DIR, write_images=True, update_freq='batch')
+tensorboard_callback = TensorBoard(
+    log_dir=TB_LOG_DIR,
+    histogram_freq=1,
+    profile_batch=0,
+    embeddings_freq=1,
+    write_images=True,
+    update_freq='batch'
+    )
 checkpoint_callback = ModelCheckpoint(filepath=WEIGHTS_PATH, monitor='val_loss', verbose=0, save_weights_only=True, save_best_only=True)
 early_stopping_callback = EarlyStopping(monitor='val_loss', patience=6, verbose=1)
 reduce_lr_callback = ReduceLROnPlateau(monitor='val_loss', factor=0.1, min_lr=1e-6, patience=2, verbose=1)
@@ -177,19 +184,19 @@ def ResidualBlock(y, nb_channels, _strides=(1, 1), _project_shortcut=False):
     return y
 
 inputs = Input(shape=(SIZE, SIZE, 1))
-model = ResidualBlock(y=inputs, nb_channels=32)
+model = ResidualBlock(y=inputs, nb_channels=32, _project_shortcut=True)
 model = MaxPool2D(pool_size=(2, 2))(model)
 model = Dropout(0.5)(model)
 
-model = ResidualBlock(y=model, nb_channels=64)
+model = ResidualBlock(y=model, nb_channels=64, _project_shortcut=True)
 model = MaxPool2D(pool_size=(2, 2))(model)
 model = Dropout(0.5)(model)
 
-model = ResidualBlock(y=model, nb_channels=128)
+model = ResidualBlock(y=model, nb_channels=128, _project_shortcut=True)
 model = MaxPool2D(pool_size=(2, 2))(model)
 model = Dropout(0.5)(model)
 
-model = ResidualBlock(y=model, nb_channels=256)
+model = ResidualBlock(y=model, nb_channels=256, _project_shortcut=True)
 model = MaxPool2D(pool_size=(2, 2))(model)
 model = Dropout(0.5)(model)
 
