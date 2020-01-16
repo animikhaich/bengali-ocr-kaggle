@@ -227,7 +227,7 @@ model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
 model.summary()
 
 # Compile Model
-opt = Adam(learning_rate=0.01)
+opt = Adam(learning_rate=0.001)
 # opt = tf.train.experimental.enable_mixed_precision_graph_rewrite(opt) # Enable Tensorflow Mixed Precision
 model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy', Precision(), Recall(), 'mean_squared_error'])
 
