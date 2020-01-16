@@ -7,13 +7,17 @@ from sklearn.model_selection import train_test_split
 import cv2, os, gc, datetime, pickle, json
 
 import tensorflow as tf
+
+# Allow GPU Memory Growth
 gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpu_devices[0], True)
 
+# Enable XLA 
+tf.config.optimizer.set_jit(True)
+
 # Keras imports
-from tensorflow.keras.models import Model
-from tensorflow.keras.models import clone_model
-from tensorflow.keras.layers import Dense, Conv2D, Flatten, GlobalAveragePooling2D, MaxPool2D, Dropout, BatchNormalization, Input
+from tensorflow.keras.models import Model, clone_model
+from tensorflow.keras.layers import Dense, Conv2D, Flatten, GlobalAveragePooling2D, MaxPool2D, Dropout, BatchNormalization, Input, Activation, LeakyReLU, add
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
@@ -25,16 +29,21 @@ from tensorflow.keras.applications.nasnet import NASNetLarge, NASNetMobile
 from tensorflow.keras.metrics import Accuracy, Precision, Recall
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard, ModelCheckpoint
 from tensorflow.keras.optimizers import Adam, SGD, RMSprop, Adadelta, Nadam, Adagrad
+from tensorflow.keras.mixed_precision import experimental as mixed_precision
 
 # Define Constants
 HEIGHT = 137
 WIDTH = 236
 SIZE = 224
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 
-TB_LOG_DIR = "logs/scalars/CustomNet_1" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-WEIGHTS_PATH = "saved_model/custom_net_1_weights.h5"
-CONFIG_PATH = "saved_model/custom_net_1_config.cfg"
+TB_LOG_DIR = "logs/scalars/CustomResNet_3_" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+WEIGHTS_PATH = "saved_model/custom_resnet_3_weights.h5"
+CONFIG_PATH = "saved_model/custom_resnet_3_config.cfg"
+
+# Set Mixed Precision policy
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_policy(policy)
 
 # Make image dumping directory
 train_dir_path = './data/images/train'
@@ -118,6 +127,8 @@ reduce_lr_callback = ReduceLROnPlateau(monitor='val_loss', factor=0.1, min_lr=1e
 # head_vowel = Dense(11, activation='softmax', name="vowel")(dense)
 # head_consonant = Dense(7, activation='softmax', name="consonant")(dense)
 # model = Model(inputs=base.inputs, outputs=[head_root, head_vowel, head_consonant])
+
+"""
 inputs = Input(shape = (SIZE, SIZE, 1))
 model = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(inputs)
 model = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(model)
@@ -140,10 +151,77 @@ head_root = Dense(168, activation='softmax', name="root")(model)
 head_vowel = Dense(11, activation='softmax', name="vowel")(model)
 head_consonant = Dense(7, activation='softmax', name="consonant")(model)
 model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
+"""
 
-print(model.summary())
+def ResidualBlock(y, nb_channels, _strides=(1, 1), _project_shortcut=False):
+    shortcut = y
+
+    # down-sampling is performed with a stride of 2
+    y = Conv2D(nb_channels, kernel_size=(3, 3), strides=_strides, padding='same')(y)
+    y = BatchNormalization(momentum=0.2)(y)
+    y = LeakyReLU()(y)
+
+    y = Conv2D(nb_channels, kernel_size=(3, 3), strides=(1, 1), padding='same')(y)
+    y = BatchNormalization(momentum=0.2)(y)
+
+    # identity shortcuts used directly when the input and output are of the same dimensions
+    if _project_shortcut or _strides != (1, 1):
+        # when the dimensions increase projection shortcut is used to match dimensions (done by 1×1 convolutions)
+        # when the shortcuts go across feature maps of two sizes, they are performed with a stride of 2
+        shortcut = Conv2D(nb_channels, kernel_size=(1, 1), strides=_strides, padding='same')(shortcut)
+        shortcut = BatchNormalization(momentum=0.2)(shortcut)
+
+    y = add([shortcut, y])
+    y = LeakyReLU()(y)
+
+    return y
+
+inputs = Input(shape=(SIZE, SIZE, 1))
+model = ResidualBlock(y=inputs, nb_channels=32)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.5)(model)
+
+model = ResidualBlock(y=model, nb_channels=64)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.5)(model)
+
+model = ResidualBlock(y=model, nb_channels=128)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.5)(model)
+
+model = ResidualBlock(y=model, nb_channels=256)
+model = MaxPool2D(pool_size=(2, 2))(model)
+model = Dropout(0.5)(model)
+
+model = Flatten()(model)
+
+model = Dense(1024)(model)
+model = BatchNormalization(momentum=0.2)(model)
+model = LeakyReLU()(model)
+model = Dropout(0.5)(model)
+
+model = Dense(512)(model)
+model = BatchNormalization(momentum=0.2)(model)
+model = LeakyReLU()(model)
+model = Dropout(0.5)(model)
+
+head_root = Dense(168)(model)
+head_root = Activation('softmax', dtype='float32', name='root')(head_root)
+
+head_vowel = Dense(11)(model)
+head_vowel = Activation('softmax', dtype='float32', name='vowel')(head_vowel)
+
+head_consonant = Dense(7)(model)
+head_consonant = Activation('softmax', dtype='float32', name='consonant')(head_consonant)
+
+model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
+
+# Model Summary
+model.summary()
+
 # Compile Model
-opt = Adam(learning_rate=0.001)
+opt = Adam(learning_rate=0.01)
+# opt = tf.train.experimental.enable_mixed_precision_graph_rewrite(opt) # Enable Tensorflow Mixed Precision
 model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy', Precision(), Recall(), 'mean_squared_error'])
 
 # Get the model Config
