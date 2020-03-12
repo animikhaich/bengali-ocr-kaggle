@@ -37,9 +37,10 @@ WIDTH = 236
 SIZE = 224
 BATCH_SIZE = 64
 
-TB_LOG_DIR = "logs/scalars/CustomResNet_3_" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-WEIGHTS_PATH = "saved_model/custom_resnet_3_weights.h5"
-CONFIG_PATH = "saved_model/custom_resnet_3_config.cfg"
+base_name = "CustomResNet_5_" + datetime.datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+TB_LOG_DIR = "logs/" + base_name
+WEIGHTS_PATH = f"saved_model/{base_name}.h5"
+CONFIG_PATH = f"saved_model/{base_name}.cfg"
 
 # Set Mixed Precision policy
 policy = mixed_precision.Policy('mixed_float16')
@@ -111,9 +112,7 @@ def data_generator(x, y_root, y_vowel, y_consonant, batch_size=16, saved_img_pat
 tensorboard_callback = TensorBoard(
     log_dir=TB_LOG_DIR,
     histogram_freq=1,
-    profile_batch=0,
-    embeddings_freq=1,
-    write_images=True,
+    write_images=False,
     update_freq='batch'
     )
 checkpoint_callback = ModelCheckpoint(filepath=WEIGHTS_PATH, monitor='val_loss', verbose=0, save_weights_only=True, save_best_only=True)
@@ -168,6 +167,10 @@ def ResidualBlock(y, nb_channels, _strides=(1, 1), _project_shortcut=False):
     y = BatchNormalization(momentum=0.2)(y)
     y = LeakyReLU()(y)
 
+    y = Conv2D(nb_channels, kernel_size=(3, 3), strides=_strides, padding='same')(y)
+    y = BatchNormalization(momentum=0.2)(y)
+    y = LeakyReLU()(y)
+
     y = Conv2D(nb_channels, kernel_size=(3, 3), strides=(1, 1), padding='same')(y)
     y = BatchNormalization(momentum=0.2)(y)
 
@@ -182,6 +185,30 @@ def ResidualBlock(y, nb_channels, _strides=(1, 1), _project_shortcut=False):
     y = LeakyReLU()(y)
 
     return y
+
+def DenseInterNet(in_layer, num_layers=4):
+    in_layer = Dense(1024)(in_layer)
+    in_layer = BatchNormalization(momentum=0.2)(in_layer)
+    in_layer = LeakyReLU()(in_layer)
+    in_layer = Dropout(0.5)(in_layer)
+
+    in_layer = Dense(512)(in_layer)
+    in_layer = BatchNormalization(momentum=0.2)(in_layer)
+    in_layer = LeakyReLU()(in_layer)
+    in_layer = Dropout(0.5)(in_layer)
+
+    in_layer = Dense(256)(in_layer)
+    in_layer = BatchNormalization(momentum=0.2)(in_layer)
+    in_layer = LeakyReLU()(in_layer)
+    in_layer = Dropout(0.5)(in_layer)
+
+    if num_layers == 4:
+        in_layer = Dense(128)(in_layer)
+        in_layer = BatchNormalization(momentum=0.2)(in_layer)
+        in_layer = LeakyReLU()(in_layer)
+        in_layer = Dropout(0.5)(in_layer)
+
+    return in_layer
 
 inputs = Input(shape=(SIZE, SIZE, 1))
 model = ResidualBlock(y=inputs, nb_channels=32, _project_shortcut=True)
@@ -202,23 +229,16 @@ model = Dropout(0.5)(model)
 
 model = Flatten()(model)
 
-model = Dense(1024)(model)
-model = BatchNormalization(momentum=0.2)(model)
-model = LeakyReLU()(model)
-model = Dropout(0.5)(model)
-
-model = Dense(512)(model)
-model = BatchNormalization(momentum=0.2)(model)
-model = LeakyReLU()(model)
-model = Dropout(0.5)(model)
-
-head_root = Dense(168)(model)
+pre_root = DenseInterNet(model, num_layers=3)
+head_root = Dense(168)(pre_root)
 head_root = Activation('softmax', dtype='float32', name='root')(head_root)
 
-head_vowel = Dense(11)(model)
+pre_vowel = DenseInterNet(model, num_layers=4)
+head_vowel = Dense(11)(pre_vowel)
 head_vowel = Activation('softmax', dtype='float32', name='vowel')(head_vowel)
 
-head_consonant = Dense(7)(model)
+pre_consonant = DenseInterNet(model, num_layers=4)
+head_consonant = Dense(7)(pre_consonant)
 head_consonant = Activation('softmax', dtype='float32', name='consonant')(head_consonant)
 
 model = Model(inputs=inputs, outputs=[head_root, head_vowel, head_consonant])
@@ -242,7 +262,7 @@ val_gen = data_generator(x_val_name, y_root_val, y_vowel_val, y_consonant_val, b
 
 # Train the model
 # Fit the model
-history = model.fit_generator(train_gen, epochs=200, validation_data=val_gen,
+history = model.fit_generator(train_gen, epochs=500, validation_data=val_gen,
                               steps_per_epoch=len(x_train_name)//BATCH_SIZE + 1, 
                               validation_steps=len(x_val_name)//BATCH_SIZE + 1,
                               callbacks=[tensorboard_callback, 
